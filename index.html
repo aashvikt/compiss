@@ -3,20 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
 <title>Washroom</title>
 <style>
-  html, body { height: 100%; margin: 0; background: #000; }
-  body { display: grid; place-items: center; touch-action: manipulation; }
+  html, body { height: 100%; margin: 0; background: #000; overscroll-behavior: none; }
+  body {
+    display: grid;
+    place-items: center;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
   svg { width: min(70vmin, 70vmax); height: auto; }
-  #needle { transition: transform .2s linear; transform-origin: 150px 150px; }
-  .dim { opacity: .18; }
+  #needle {
+    transition: transform .35s cubic-bezier(.22, 1, .36, 1);
+    transform-origin: 150px 150px;
+  }
+  #arrow { opacity: .16; transition: opacity .6s ease; }
+  #arrow.live { opacity: 1; }
   .hide { display: none; }
   @media (prefers-reduced-motion: reduce) { #needle { transition: none; } }
 </style>
 </head>
 <body>
 
-<svg id="arrow" class="dim" viewBox="0 0 300 300">
+<svg id="arrow" viewBox="0 0 300 300">
   <g id="needle">
     <polygon points="150,30 180,185 150,163 120,185" fill="#fff"/>
   </g>
@@ -73,9 +85,20 @@
   var sad = document.getElementById('sad');
   var tick = document.getElementById('tick');
 
-  var pos = null, target = null, heading = 0;
-  var turned = 0, hits = 0, over = false;
-  var smooth = makeSmoother(0.15);
+  var OUT_OF_RANGE = 20000;
+  var CUSTOMER_PENALTY = 200;
+
+  var all = null;
+  var ranked = [];
+  var pick = 0;
+  var pos = null;
+  var heading = 0;
+  var turned = 0;
+  var hits = 0;
+  var running = false;
+  var over = false;
+  var smooth = makeSmoother(0.2);
+  var wakeLock = null;
 
   function show(el) {
     over = true;
@@ -83,58 +106,64 @@
     el.classList.remove('hide');
   }
 
+  function reset() {
+    over = false;
+    sad.classList.add('hide');
+    tick.classList.add('hide');
+    arrow.classList.remove('hide');
+  }
+
   function draw() {
-    if (!pos || !target || over) return;
-    arrow.classList.remove('dim');
-    var d = distance(pos, target);
+    if (over || !pos || !ranked.length) return;
+    var target = ranked[pick];
+
+    arrow.classList.add('live');
+
     var delta = ((bearing(pos, target) - heading - turned) % 360 + 540) % 360 - 180;
     turned += delta;
     needleEl.style.transform = 'rotate(' + turned + 'deg)';
 
+    var d = distance(pos, target);
     hits = d < Math.max(15, Math.min(pos.acc, 30)) ? hits + 1 : 0;
     if (hits >= 3) show(tick);
   }
 
-  function findToilets(lat, lon, radius) {
-    var q = '[out:json][timeout:20];nwr(around:' + radius + ',' + lat + ',' + lon +
-            ')[amenity=toilets];out center;';
-    return fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'data=' + encodeURIComponent(q)
-    }).then(function (res) {
-      if (!res.ok) throw new Error('overpass');
-      return res.json();
-    }).then(function (json) {
-      return json.elements.map(function (e) {
-        return {
-          lat: e.lat != null ? e.lat : (e.center && e.center.lat),
-          lon: e.lon != null ? e.lon : (e.center && e.center.lon)
-        };
-      }).filter(function (t) { return t.lat != null; });
-    });
+  function load() {
+    if (all) return Promise.resolve(all);
+    return fetch('toilets.json', { cache: 'default' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('toilets.json ' + res.status);
+        return res.json();
+      })
+      .then(function (json) {
+        all = json.toilets.map(function (t) {
+          return { lat: t[0], lon: t[1], customers: !!t[2], fee: !!t[3], name: t[4] };
+        });
+        return all;
+      });
   }
 
-  function search(from, radii, i) {
-    i = i || 0;
-    if (i >= radii.length) return Promise.resolve(null);
-    return findToilets(from.lat, from.lon, radii[i]).then(function (list) {
-      if (!list.length) return search(from, radii, i + 1);
-      return list.reduce(function (best, t) {
-        return distance(from, t) < distance(from, best) ? t : best;
-      });
-    });
+  function rank(from) {
+    return all
+      .map(function (t) {
+        var d = distance(from, t);
+        return { t: t, score: d + (t.customers ? CUSTOMER_PENALTY : 0), d: d };
+      })
+      .sort(function (a, b) { return a.score - b.score; })
+      .map(function (x) { return x.t; });
   }
 
   function startCompass() {
     var DOE = window.DeviceOrientationEvent;
     var ready = (DOE && typeof DOE.requestPermission === 'function')
-      ? DOE.requestPermission() : Promise.resolve('granted');
+      ? DOE.requestPermission()
+      : Promise.resolve('granted');
 
     return ready.then(function (state) {
       if (state !== 'granted') return;
       var evt = ('ondeviceorientationabsolute' in window)
-        ? 'deviceorientationabsolute' : 'deviceorientation';
+        ? 'deviceorientationabsolute'
+        : 'deviceorientation';
       window.addEventListener(evt, function (e) {
         var h = null;
         if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
@@ -148,10 +177,14 @@
 
   function firstFix() {
     return new Promise(function (resolve, reject) {
-      if (!navigator.geolocation) return reject(new Error('geo'));
-      navigator.geolocation.getCurrentPosition(function (p) {
-        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
-      }, reject, { enableHighAccuracy: true, timeout: 15000 });
+      if (!navigator.geolocation) return reject(new Error('no geolocation'));
+      navigator.geolocation.getCurrentPosition(
+        function (p) {
+          resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
+        },
+        reject,
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+      );
     });
   }
 
@@ -159,24 +192,57 @@
     navigator.geolocation.watchPosition(function (p) {
       pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
       draw();
-    }, function () {}, { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 });
+    }, function () {},
+       { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
   }
+
+  function keepAwake() {
+    if (!navigator.wakeLock) return;
+    navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; })
+      .catch(function () {});
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && running && !over) keepAwake();
+  });
 
   function go() {
-    document.removeEventListener('click', go);
+    if (running) return;
+    running = true;
+    reset();
     startCompass();
-    firstFix().then(function (p) {
-      pos = p;
-      return search(p, [400, 1000, 2500, 5000]);
-    }).then(function (t) {
-      if (!t) return show(sad);
-      target = t;
+    keepAwake();
+
+    Promise.all([load(), firstFix()]).then(function (r) {
+      pos = r[1];
+      ranked = rank(pos);
+      pick = 0;
+      if (!ranked.length || distance(pos, ranked[0]) > OUT_OF_RANGE) {
+        running = false;
+        return show(sad);
+      }
       watch();
       draw();
-    }).catch(function () { show(sad); });
+    }).catch(function () {
+      running = false;
+      show(sad);
+    });
   }
 
-  document.addEventListener('click', go);
+  var lastTap = 0;
+  document.addEventListener('click', function () {
+    var now = Date.now();
+    var quick = now - lastTap < 400;
+    lastTap = now;
+
+    if (!running) return go();
+    if (over) { running = false; return go(); }
+    if (quick && pick < ranked.length - 1) {
+      pick++;
+      hits = 0;
+      draw();
+    }
+  });
 })();
 </script>
 
