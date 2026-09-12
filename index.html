@@ -17,12 +17,22 @@
   }
   svg { width: min(70vmin, 70vmax); height: auto; }
   #needle {
-    transition: transform .35s cubic-bezier(.22, 1, .36, 1);
+    transition: transform .12s linear;
     transform-origin: 150px 150px;
   }
   #arrow { opacity: .16; transition: opacity .6s ease; }
   #arrow.live { opacity: 1; }
   .hide { display: none; }
+  #debug {
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
+    left: 0;
+    padding: .6rem .8rem;
+    font: 12px/1.5 ui-monospace, monospace;
+    color: #0f0;
+    white-space: pre;
+    pointer-events: none;
+  }
   @media (prefers-reduced-motion: reduce) { #needle { transition: none; } }
 </style>
 </head>
@@ -80,10 +90,57 @@
     };
   }
 
+  function screenAngle() {
+    if (window.screen && screen.orientation && typeof screen.orientation.angle === 'number') {
+      return screen.orientation.angle;
+    }
+    return window.orientation || 0;
+  }
+
+  function headingFrom(e) {
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      return (e.webkitCompassHeading + screenAngle() + 360) % 360;
+    }
+    if (typeof e.alpha !== 'number') return null;
+
+    var a = rad(e.alpha), b = rad(e.beta || 0), g = rad(e.gamma || 0);
+    var ca = Math.cos(a), sa = Math.sin(a);
+    var cb = Math.cos(b), sb = Math.sin(b);
+    var cg = Math.cos(g), sg = Math.sin(g);
+
+    var xx = ca * cg - sa * sb * sg;
+    var xy = sa * cg + ca * sb * sg;
+    var yx = -sa * cb;
+    var yy = ca * cb;
+    var zx = ca * sg + sa * sb * cg;
+    var zy = sa * sg - ca * sb * cg;
+    var zz = cb * cg;
+
+    var t = rad(screenAngle());
+    var st = Math.sin(t), ct = Math.cos(t);
+    var ux = st * xx + ct * yx;
+    var uy = st * xy + ct * yy;
+
+    var w = Math.abs(zz);
+    var px = w * ux + (1 - w) * -zx;
+    var py = w * uy + (1 - w) * -zy;
+
+    if (!px && !py) return null;
+    return (deg(Math.atan2(px, py)) + 360) % 360;
+  }
+
   var arrow = document.getElementById('arrow');
   var needleEl = document.getElementById('needle');
   var sad = document.getElementById('sad');
   var tick = document.getElementById('tick');
+
+  var DEBUG = /[?&]debug/.test(location.search);
+  var panel = null;
+  if (DEBUG) {
+    panel = document.createElement('div');
+    panel.id = 'debug';
+    document.body.appendChild(panel);
+  }
 
   var OUT_OF_RANGE = 20000;
   var CUSTOMER_PENALTY = 200;
@@ -97,7 +154,11 @@
   var hits = 0;
   var running = false;
   var over = false;
-  var smooth = makeSmoother(0.2);
+  var dirty = false;
+  var haveAbsolute = false;
+  var source = 'none';
+  var events = 0;
+  var smooth = makeSmoother(0.35);
   var wakeLock = null;
 
   function show(el) {
@@ -113,7 +174,23 @@
     arrow.classList.remove('hide');
   }
 
-  function draw() {
+  function render() {
+    if (DEBUG) {
+      panel.textContent =
+        'source  ' + source + (haveAbsolute ? '' : ' (NOT ABSOLUTE)') + '\n' +
+        'events  ' + events + '\n' +
+        'heading ' + heading.toFixed(0) + '\n' +
+        'screen  ' + screenAngle() + '\n' +
+        (pos ? 'fix     ' + pos.lat.toFixed(5) + ' ' + pos.lon.toFixed(5) +
+               ' \u00b1' + Math.round(pos.acc) + 'm\n' : 'fix     none\n') +
+        (ranked.length && pos
+          ? 'target  ' + (ranked[pick].name || 'unnamed') + '\n' +
+            'bearing ' + bearing(pos, ranked[pick]).toFixed(0) + '\n' +
+            'dist    ' + Math.round(distance(pos, ranked[pick])) + 'm\n' +
+            'pick    ' + (pick + 1) + '/' + ranked.length
+          : 'target  none');
+    }
+
     if (over || !pos || !ranked.length) return;
     var target = ranked[pick];
 
@@ -126,6 +203,11 @@
     var d = distance(pos, target);
     hits = d < Math.max(15, Math.min(pos.acc, 30)) ? hits + 1 : 0;
     if (hits >= 3) show(tick);
+  }
+
+  function frame() {
+    if (dirty) { dirty = false; render(); }
+    requestAnimationFrame(frame);
   }
 
   function load() {
@@ -153,45 +235,68 @@
       .map(function (x) { return x.t; });
   }
 
+  function onOrient(e, absolute) {
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      absolute = true;
+    }
+    if (haveAbsolute && !absolute) return;
+    var h = headingFrom(e);
+    if (h === null) return;
+    if (absolute) haveAbsolute = true;
+    source = absolute
+      ? (typeof e.webkitCompassHeading === 'number' ? 'ios compass' : 'absolute')
+      : 'relative';
+    events++;
+    heading = smooth(h);
+    dirty = true;
+  }
+
   function startCompass() {
     var DOE = window.DeviceOrientationEvent;
-    var ready = (DOE && typeof DOE.requestPermission === 'function')
+    if (!DOE) return Promise.resolve();
+    var ready = (typeof DOE.requestPermission === 'function')
       ? DOE.requestPermission()
       : Promise.resolve('granted');
 
     return ready.then(function (state) {
-      if (state !== 'granted') return;
-      var evt = ('ondeviceorientationabsolute' in window)
-        ? 'deviceorientationabsolute'
-        : 'deviceorientation';
-      window.addEventListener(evt, function (e) {
-        var h = null;
-        if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
-        else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
-        if (h === null) return;
-        heading = smooth(h);
-        draw();
+      if (state !== 'granted') { source = 'denied'; return; }
+      window.addEventListener('deviceorientationabsolute', function (e) {
+        onOrient(e, true);
       }, true);
-    }).catch(function () {});
+      window.addEventListener('deviceorientation', function (e) {
+        onOrient(e, !!e.absolute);
+      }, true);
+    }).catch(function () { source = 'unavailable'; });
   }
 
   function firstFix() {
     return new Promise(function (resolve, reject) {
       if (!navigator.geolocation) return reject(new Error('no geolocation'));
-      navigator.geolocation.getCurrentPosition(
-        function (p) {
-          resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
-        },
-        reject,
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
-      );
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error('location timed out'));
+      }, 15000);
+
+      navigator.geolocation.getCurrentPosition(function (p) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
+      }, function (err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
     });
   }
 
   function watch() {
     navigator.geolocation.watchPosition(function (p) {
       pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
-      draw();
+      dirty = true;
     }, function () {},
        { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
   }
@@ -222,9 +327,10 @@
         return show(sad);
       }
       watch();
-      draw();
-    }).catch(function () {
+      dirty = true;
+    }).catch(function (err) {
       running = false;
+      if (DEBUG) console.error(err);
       show(sad);
     });
   }
@@ -240,9 +346,11 @@
     if (quick && pick < ranked.length - 1) {
       pick++;
       hits = 0;
-      draw();
+      dirty = true;
     }
   });
+
+  requestAnimationFrame(frame);
 })();
 </script>
 
