@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Washroom</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; }
+  body { display: grid; place-items: center; touch-action: manipulation; }
+  svg { width: min(70vmin, 70vmax); height: auto; }
+  #needle { transition: transform .2s linear; transform-origin: 150px 150px; }
+  .dim { opacity: .18; }
+  .hide { display: none; }
+  @media (prefers-reduced-motion: reduce) { #needle { transition: none; } }
+</style>
+</head>
+<body>
+
+<svg id="arrow" class="dim" viewBox="0 0 300 300">
+  <g id="needle">
+    <polygon points="150,30 180,185 150,163 120,185" fill="#fff"/>
+  </g>
+</svg>
+
+<svg id="sad" class="hide" viewBox="0 0 300 300" stroke="#fff" stroke-width="12"
+     stroke-linecap="round" fill="none">
+  <circle cx="150" cy="150" r="120"/>
+  <line x1="110" y1="120" x2="110" y2="122"/>
+  <line x1="190" y1="120" x2="190" y2="122"/>
+  <path d="M105 205 Q150 170 195 205"/>
+</svg>
+
+<svg id="tick" class="hide" viewBox="0 0 300 300" stroke="#22c55e" stroke-width="24"
+     stroke-linecap="round" stroke-linejoin="round" fill="none">
+  <path d="M70 155 L125 210 L230 95"/>
+</svg>
+
+<script>
+(function () {
+  'use strict';
+
+  var R = 6371000;
+  var rad = function (d) { return d * Math.PI / 180; };
+  var deg = function (r) { return r * 180 / Math.PI; };
+
+  function distance(a, b) {
+    var dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+    var h = Math.pow(Math.sin(dLat / 2), 2) +
+            Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.pow(Math.sin(dLon / 2), 2);
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function bearing(a, b) {
+    var dLon = rad(b.lon - a.lon);
+    var y = Math.sin(dLon) * Math.cos(rad(b.lat));
+    var x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) -
+            Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(dLon);
+    return (deg(Math.atan2(y, x)) + 360) % 360;
+  }
+
+  function makeSmoother(alpha) {
+    var x = null, y = null;
+    return function (d) {
+      var r = rad(d), cx = Math.cos(r), cy = Math.sin(r);
+      x = x === null ? cx : x + alpha * (cx - x);
+      y = y === null ? cy : y + alpha * (cy - y);
+      return (deg(Math.atan2(y, x)) + 360) % 360;
+    };
+  }
+
+  var arrow = document.getElementById('arrow');
+  var needleEl = document.getElementById('needle');
+  var sad = document.getElementById('sad');
+  var tick = document.getElementById('tick');
+
+  var pos = null, target = null, heading = 0;
+  var turned = 0, hits = 0, over = false;
+  var smooth = makeSmoother(0.15);
+
+  function show(el) {
+    over = true;
+    arrow.classList.add('hide');
+    el.classList.remove('hide');
+  }
+
+  function draw() {
+    if (!pos || !target || over) return;
+    arrow.classList.remove('dim');
+    var d = distance(pos, target);
+    var delta = ((bearing(pos, target) - heading - turned) % 360 + 540) % 360 - 180;
+    turned += delta;
+    needleEl.style.transform = 'rotate(' + turned + 'deg)';
+
+    hits = d < Math.max(15, Math.min(pos.acc, 30)) ? hits + 1 : 0;
+    if (hits >= 3) show(tick);
+  }
+
+  function findToilets(lat, lon, radius) {
+    var q = '[out:json][timeout:20];nwr(around:' + radius + ',' + lat + ',' + lon +
+            ')[amenity=toilets];out center;';
+    return fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(q)
+    }).then(function (res) {
+      if (!res.ok) throw new Error('overpass');
+      return res.json();
+    }).then(function (json) {
+      return json.elements.map(function (e) {
+        return {
+          lat: e.lat != null ? e.lat : (e.center && e.center.lat),
+          lon: e.lon != null ? e.lon : (e.center && e.center.lon)
+        };
+      }).filter(function (t) { return t.lat != null; });
+    });
+  }
+
+  function search(from, radii, i) {
+    i = i || 0;
+    if (i >= radii.length) return Promise.resolve(null);
+    return findToilets(from.lat, from.lon, radii[i]).then(function (list) {
+      if (!list.length) return search(from, radii, i + 1);
+      return list.reduce(function (best, t) {
+        return distance(from, t) < distance(from, best) ? t : best;
+      });
+    });
+  }
+
+  function startCompass() {
+    var DOE = window.DeviceOrientationEvent;
+    var ready = (DOE && typeof DOE.requestPermission === 'function')
+      ? DOE.requestPermission() : Promise.resolve('granted');
+
+    return ready.then(function (state) {
+      if (state !== 'granted') return;
+      var evt = ('ondeviceorientationabsolute' in window)
+        ? 'deviceorientationabsolute' : 'deviceorientation';
+      window.addEventListener(evt, function (e) {
+        var h = null;
+        if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+        else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
+        if (h === null) return;
+        heading = smooth(h);
+        draw();
+      }, true);
+    }).catch(function () {});
+  }
+
+  function firstFix() {
+    return new Promise(function (resolve, reject) {
+      if (!navigator.geolocation) return reject(new Error('geo'));
+      navigator.geolocation.getCurrentPosition(function (p) {
+        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
+      }, reject, { enableHighAccuracy: true, timeout: 15000 });
+    });
+  }
+
+  function watch() {
+    navigator.geolocation.watchPosition(function (p) {
+      pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+      draw();
+    }, function () {}, { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 });
+  }
+
+  function go() {
+    document.removeEventListener('click', go);
+    startCompass();
+    firstFix().then(function (p) {
+      pos = p;
+      return search(p, [400, 1000, 2500, 5000]);
+    }).then(function (t) {
+      if (!t) return show(sad);
+      target = t;
+      watch();
+      draw();
+    }).catch(function () { show(sad); });
+  }
+
+  document.addEventListener('click', go);
+})();
+</script>
+
+</body>
+</html>
