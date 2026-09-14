@@ -1,363 +1,357 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#000000">
-<title>compiss</title>
-<style>
-  html, body { height: 100%; margin: 0; color: white; background: #000; overscroll-behavior: none; }
-  h1 { font-family: sans-serif; font-size: 60px; }
-  body {
-    display: grid;
-    place-items: center;
-    touch-action: manipulation;
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-tap-highlight-color: transparent;
-  }
-  svg { width: min(70vmin, 70vmax); height: auto; }
-  #needle {
-    transition: transform .12s linear;
-    transform-origin: 150px 150px;
-  }
-  #arrow { opacity: .16; transition: opacity .6s ease; }
-  #arrow.live { opacity: 1; }
-  .hide { display: none; }
-  #debug {
-    position: fixed;
-    top: env(safe-area-inset-top, 0px);
-    left: 0;
-    padding: .6rem .8rem;
-    font: 12px/1.5 ui-monospace, monospace;
-    color: #0f0;
-    white-space: pre;
-    pointer-events: none;
-  }
-  @media (prefers-reduced-motion: reduce) { #needle { transition: none; } }
-</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <title>compiss</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            color: white;
+            background: #000;
+            overscroll-behavior: none;
+        }
+        h1 {
+            font-family: sans-serif;
+            font-size: 60px;
+        }
+        body {
+            display: grid;
+            place-items: center;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        svg {
+            width: min(70vmin, 70vmax);
+            height: auto;
+        }
+        #needle {
+            transition: transform .12s linear;
+            transform-origin: 150px 150px;
+        }
+        #arrow {
+            opacity: .16;
+            transition: opacity .6s ease;
+        }
+        #arrow.live {
+            opacity: 1;
+        }
+        .hide {
+            display: none;
+        }
+        #debug {
+            position: fixed;
+            top: env(safe-area-inset-top, 0px);
+            left: 0;
+            font: 12px/1.5 ui-monospace, monospace;
+            color: #0f0;
+            white-space: pre;
+            pointer-events: none;
+        }
+    </style>
 </head>
 <body>
+    <h1>COMPISS</h1>
+    <h3>click arrow</h3>
+    <p>Find a bathroom, fast!<br><small><i>Double-tap for next-closest.</i></small></p>
+    <svg id="arrow" viewBox="0 0 300 300">
+        <g id="needle">
+            <polygon points="150,30 180,185 150,163 120,185" fill="#fff"/>
+        </g>
+    </svg>
+    <svg id="sad" class="hide" viewBox="0 0 300 300" stroke="#fff" stroke-width="12" stroke-linecap="round" fill="none">
+        <circle cx="150" cy="150" r="120"/>
+        <line x1="110" y1="120" x2="110" y2="122"/>
+        <line x1="190" y1="120" x2="190" y2="122"/>
+        <path d="M105 205 Q150 170 195 205"/>
+    </svg>
+    <svg id="tick" class="hide" viewBox="0 0 300 300" stroke="#22c55e" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M70 155 L125 210 L230 95"/>
+    </svg>
+    <script>
+        (function () {
+            'use strict';
 
-<h1>COMPISS</h1>
-<h3>click arrow</h3>
-<p>Find a bathroom, fast!<br><small><i>Double-tap for next-closest.</i></small></p>
+            var R = 6371000;
+            var rad = function (d) { return d * Math.PI / 180; };
+            var deg = function (r) { return r * 180 / Math.PI; };
 
-<svg id="arrow" viewBox="0 0 300 300">
-  <g id="needle">
-    <polygon points="150,30 180,185 150,163 120,185" fill="#fff"/>
-  </g>
-</svg>
+            function distance(a, b) {
+                var dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+                var h = Math.pow(Math.sin(dLat / 2), 2) + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.pow(Math.sin(dLon / 2), 2);
+                return 2 * R * Math.asin(Math.sqrt(h));
+            }
 
-<svg id="sad" class="hide" viewBox="0 0 300 300" stroke="#fff" stroke-width="12"
-     stroke-linecap="round" fill="none">
-  <circle cx="150" cy="150" r="120"/>
-  <line x1="110" y1="120" x2="110" y2="122"/>
-  <line x1="190" y1="120" x2="190" y2="122"/>
-  <path d="M105 205 Q150 170 195 205"/>
-</svg>
+            function bearing(a, b) {
+                var dLon = rad(b.lon - a.lon);
+                var y = Math.sin(dLon) * Math.cos(rad(b.lat));
+                var x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(dLon);
+                return (deg(Math.atan2(y, x)) + 360) % 360;
+            }
 
-<svg id="tick" class="hide" viewBox="0 0 300 300" stroke="#22c55e" stroke-width="24"
-     stroke-linecap="round" stroke-linejoin="round" fill="none">
-  <path d="M70 155 L125 210 L230 95"/>
-</svg>
+            function makeSmoother(alpha) {
+                var x = null, y = null;
+                return function (d) {
+                    var r = rad(d), cx = Math.cos(r), cy = Math.sin(r);
+                    x = x === null ? cx : x + alpha * (cx - x);
+                    y = y === null ? cy : y + alpha * (cy - y);
+                    return (deg(Math.atan2(y, x)) + 360) % 360;
+                };
+            }
 
-<script>
-(function () {
-  'use strict';
+            function screenAngle() {
+                if (window.screen && screen.orientation && typeof screen.orientation.angle === 'number') {
+                    return screen.orientation.angle;
+                }
+                return window.orientation || 0;
+            }
 
-  var R = 6371000;
-  var rad = function (d) { return d * Math.PI / 180; };
-  var deg = function (r) { return r * 180 / Math.PI; };
+            function headingFrom(e) {
+                if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+                    return (e.webkitCompassHeading + screenAngle() + 360) % 360;
+                }
+                if (typeof e.alpha !== 'number') return null;
+                var a = rad(e.alpha), b = rad(e.beta || 0), g = rad(e.gamma || 0);
+                var ca = Math.cos(a), sa = Math.sin(a);
+                var cb = Math.cos(b), sb = Math.sin(b);
+                var cg = Math.cos(g), sg = Math.sin(g);
+                var xx = ca * cg - sa * sb * sg;
+                var xy = sa * cg + ca * sb * sg;
+                var yx = -sa * cb;
+                var yy = ca * cb;
+                var zx = ca * sg + sa * sb * cg;
+                var zy = sa * sg - ca * sb * cg;
+                var zz = cb * cg;
+                var t = rad(screenAngle());
+                var st = Math.sin(t), ct = Math.cos(t);
+                var ux = st * xx + ct * yx;
+                var uy = st * xy + ct * yy;
+                var w = Math.abs(zz);
+                var px = w * ux + (1 - w) * -zx;
+                var py = w * uy + (1 - w) * -zy;
+                if (!px && !py) return null;
+                return (deg(Math.atan2(px, py)) + 360) % 360;
+            }
 
-  function distance(a, b) {
-    var dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
-    var h = Math.pow(Math.sin(dLat / 2), 2) +
-            Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.pow(Math.sin(dLon / 2), 2);
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
+            var arrow = document.getElementById('arrow');
+            var needleEl = document.getElementById('needle');
+            var sad = document.getElementById('sad');
+            var tick = document.getElementById('tick');
 
-  function bearing(a, b) {
-    var dLon = rad(b.lon - a.lon);
-    var y = Math.sin(dLon) * Math.cos(rad(b.lat));
-    var x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) -
-            Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(dLon);
-    return (deg(Math.atan2(y, x)) + 360) % 360;
-  }
+            var DEBUG = /[?&]debug/.test(location.search);
+            var panel = null;
+            if (DEBUG) {
+                panel = document.createElement('div');
+                panel.id = 'debug';
+                document.body.appendChild(panel);
+            }
 
-  function makeSmoother(alpha) {
-    var x = null, y = null;
-    return function (d) {
-      var r = rad(d), cx = Math.cos(r), cy = Math.sin(r);
-      x = x === null ? cx : x + alpha * (cx - x);
-      y = y === null ? cy : y + alpha * (cy - y);
-      return (deg(Math.atan2(y, x)) + 360) % 360;
-    };
-  }
+            var OUT_OF_RANGE = 20000;
+            var CUSTOMER_PENALTY = 200;
 
-  function screenAngle() {
-    if (window.screen && screen.orientation && typeof screen.orientation.angle === 'number') {
-      return screen.orientation.angle;
-    }
-    return window.orientation || 0;
-  }
+            var all = null;
+            var ranked = [];
+            var pick = 0;
+            var pos = null;
+            var heading = 0;
+            var turned = 0;
+            var hits = 0;
+            var running = false;
+            var over = false;
+            var dirty = false;
+            var haveAbsolute = false;
+            var source = 'none';
+            var events = 0;
+            var smooth = makeSmoother(0.35);
+            var wakeLock = null;
 
-  function headingFrom(e) {
-    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
-      return (e.webkitCompassHeading + screenAngle() + 360) % 360;
-    }
-    if (typeof e.alpha !== 'number') return null;
+            function show(el) {
+                over = true;
+                arrow.classList.add('hide');
+                el.classList.remove('hide');
+            }
 
-    var a = rad(e.alpha), b = rad(e.beta || 0), g = rad(e.gamma || 0);
-    var ca = Math.cos(a), sa = Math.sin(a);
-    var cb = Math.cos(b), sb = Math.sin(b);
-    var cg = Math.cos(g), sg = Math.sin(g);
+            function reset() {
+                over = false;
+                sad.classList.add('hide');
+                tick.classList.add('hide');
+                arrow.classList.remove('hide');
+            }
 
-    var xx = ca * cg - sa * sb * sg;
-    var xy = sa * cg + ca * sb * sg;
-    var yx = -sa * cb;
-    var yy = ca * cb;
-    var zx = ca * sg + sa * sb * cg;
-    var zy = sa * sg - ca * sb * cg;
-    var zz = cb * cg;
+            function render() {
+                if (DEBUG) {
+                    panel.textContent =
+                        'source  ' + source + (haveAbsolute ? '' : ' (NOT ABSOLUTE)') + '\n' +
+                        'events  ' + events + '\n' +
+                        'heading ' + heading.toFixed(0) + '\n' +
+                        'screen  ' + screenAngle() + '\n' +
+                        (pos ? 'fix     ' + pos.lat.toFixed(5) + ' ' + pos.lon.toFixed(5) +
+                               ' \u00b1' + Math.round(pos.acc) + 'm\n' : 'fix     none\n') +
+                        (ranked.length && pos
+                            ? 'target  ' + (ranked[pick].name || 'unnamed') + '\n' +
+                              'bearing ' + bearing(pos, ranked[pick]).toFixed(0) + '\n' +
+                              'dist    ' + Math.round(distance(pos, ranked[pick])) + 'm\n' +
+                              'pick    ' + (pick + 1) + '/' + ranked.length
+                            : 'target  none');
+                }
+                if (over || !pos || !ranked.length) return;
+                var target = ranked[pick];
+                arrow.classList.add('live');
+                var delta = ((bearing(pos, target) - heading - turned) % 360 + 540) % 360 - 180;
+                turned += delta;
+                needleEl.style.transform = 'rotate(' + turned + 'deg)';
+                var d = distance(pos, target);
+                hits = d < Math.max(15, Math.min(pos.acc, 30)) ? hits + 1 : 0;
+                if (hits >= 3) show(tick);
+            }
 
-    var t = rad(screenAngle());
-    var st = Math.sin(t), ct = Math.cos(t);
-    var ux = st * xx + ct * yx;
-    var uy = st * xy + ct * yy;
+            function frame() {
+                if (dirty) { dirty = false; render(); }
+                requestAnimationFrame(frame);
+            }
 
-    var w = Math.abs(zz);
-    var px = w * ux + (1 - w) * -zx;
-    var py = w * uy + (1 - w) * -zy;
+            function load() {
+                if (all) return Promise.resolve(all);
+                return fetch('toilets.json', { cache: 'default' })
+                    .then(function (res) {
+                        if (!res.ok) throw new Error('toilets.json ' + res.status);
+                        return res.json();
+                    })
+                    .then(function (json) {
+                        all = json.toilets.map(function (t) {
+                            return { lat: t[0], lon: t[1], customers: !!t[2], fee: !!t[3], name: t[4] };
+                        });
+                        return all;
+                    });
+            }
 
-    if (!px && !py) return null;
-    return (deg(Math.atan2(px, py)) + 360) % 360;
-  }
+            function rank(from) {
+                return all
+                    .map(function (t) {
+                        var d = distance(from, t);
+                        return { t: t, score: d + (t.customers ? CUSTOMER_PENALTY : 0), d: d };
+                    })
+                    .sort(function (a, b) { return a.score - b.score; })
+                    .map(function (x) { return x.t; });
+            }
 
-  var arrow = document.getElementById('arrow');
-  var needleEl = document.getElementById('needle');
-  var sad = document.getElementById('sad');
-  var tick = document.getElementById('tick');
+            function onOrient(e, absolute) {
+                if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+                    absolute = true;
+                }
+                if (haveAbsolute && !absolute) return;
+                var h = headingFrom(e);
+                if (h === null) return;
+                if (absolute) haveAbsolute = true;
+                source = absolute
+                    ? (typeof e.webkitCompassHeading === 'number' ? 'ios compass' : 'absolute')
+                    : 'relative';
+                events++;
+                heading = smooth(h);
+                dirty = true;
+            }
 
-  var DEBUG = /[?&]debug/.test(location.search);
-  var panel = null;
-  if (DEBUG) {
-    panel = document.createElement('div');
-    panel.id = 'debug';
-    document.body.appendChild(panel);
-  }
+            function startCompass() {
+                var DOE = window.DeviceOrientationEvent;
+                if (!DOE) return Promise.resolve();
+                var ready = (typeof DOE.requestPermission === 'function')
+                    ? DOE.requestPermission()
+                    : Promise.resolve('granted');
+                return ready.then(function (state) {
+                    if (state !== 'granted') { source = 'denied'; return; }
+                    window.addEventListener('deviceorientationabsolute', function (e) {
+                        onOrient(e, true);
+                    }, true);
+                    window.addEventListener('deviceorientation', function (e) {
+                        onOrient(e, !!e.absolute);
+                    }, true);
+                }).catch(function () { source = 'unavailable'; });
+            }
 
-  var OUT_OF_RANGE = 20000;
-  var CUSTOMER_PENALTY = 200;
+            function firstFix() {
+                return new Promise(function (resolve, reject) {
+                    if (!navigator.geolocation) return reject(new Error('no geolocation'));
+                    var settled = false;
+                    var timer = setTimeout(function () {
+                        if (settled) return;
+                        settled = true;
+                        reject(new Error('location timed out'));
+                    }, 15000);
+                    navigator.geolocation.getCurrentPosition(function (p) {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
+                    }, function (err) {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
+                        reject(err);
+                    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+                });
+            }
 
-  var all = null;
-  var ranked = [];
-  var pick = 0;
-  var pos = null;
-  var heading = 0;
-  var turned = 0;
-  var hits = 0;
-  var running = false;
-  var over = false;
-  var dirty = false;
-  var haveAbsolute = false;
-  var source = 'none';
-  var events = 0;
-  var smooth = makeSmoother(0.35);
-  var wakeLock = null;
+            function watch() {
+                navigator.geolocation.watchPosition(function (p) {
+                    pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+                    dirty = true;
+                }, function () {},
+                    { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
+            }
 
-  function show(el) {
-    over = true;
-    arrow.classList.add('hide');
-    el.classList.remove('hide');
-  }
+            function keepAwake() {
+                if (!navigator.wakeLock) return;
+                navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; })
+                    .catch(function () {});
+            }
 
-  function reset() {
-    over = false;
-    sad.classList.add('hide');
-    tick.classList.add('hide');
-    arrow.classList.remove('hide');
-  }
+            document.addEventListener('visibilitychange', function () {
+                if (document.visibilityState === 'visible' && running && !over) keepAwake();
+            });
 
-  function render() {
-    if (DEBUG) {
-      panel.textContent =
-        'source  ' + source + (haveAbsolute ? '' : ' (NOT ABSOLUTE)') + '\n' +
-        'events  ' + events + '\n' +
-        'heading ' + heading.toFixed(0) + '\n' +
-        'screen  ' + screenAngle() + '\n' +
-        (pos ? 'fix     ' + pos.lat.toFixed(5) + ' ' + pos.lon.toFixed(5) +
-               ' \u00b1' + Math.round(pos.acc) + 'm\n' : 'fix     none\n') +
-        (ranked.length && pos
-          ? 'target  ' + (ranked[pick].name || 'unnamed') + '\n' +
-            'bearing ' + bearing(pos, ranked[pick]).toFixed(0) + '\n' +
-            'dist    ' + Math.round(distance(pos, ranked[pick])) + 'm\n' +
-            'pick    ' + (pick + 1) + '/' + ranked.length
-          : 'target  none');
-    }
+            function go() {
+                if (running) return;
+                running = true;
+                reset();
+                startCompass();
+                keepAwake();
+                Promise.all([load(), firstFix()]).then(function (r) {
+                    pos = r[1];
+                    ranked = rank(pos);
+                    pick = 0;
+                    if (!ranked.length || distance(pos, ranked[0]) > OUT_OF_RANGE) {
+                        running = false;
+                        return show(sad);
+                    }
+                    watch();
+                    dirty = true;
+                }).catch(function (err) {
+                    running = false;
+                    if (DEBUG) console.error(err);
+                    show(sad);
+                });
+            }
 
-    if (over || !pos || !ranked.length) return;
-    var target = ranked[pick];
+            var lastTap = 0;
+            document.addEventListener('click', function () {
+                var now = Date.now();
+                var quick = now - lastTap < 400;
+                lastTap = now;
+                if (!running) return go();
+                if (over) { running = false; return go(); }
+                if (quick && pick < ranked.length - 1) {
+                    pick++;
+                    hits = 0;
+                    dirty = true;
+                }
+            });
 
-    arrow.classList.add('live');
-
-    var delta = ((bearing(pos, target) - heading - turned) % 360 + 540) % 360 - 180;
-    turned += delta;
-    needleEl.style.transform = 'rotate(' + turned + 'deg)';
-
-    var d = distance(pos, target);
-    hits = d < Math.max(15, Math.min(pos.acc, 30)) ? hits + 1 : 0;
-    if (hits >= 3) show(tick);
-  }
-
-  function frame() {
-    if (dirty) { dirty = false; render(); }
-    requestAnimationFrame(frame);
-  }
-
-  function load() {
-    if (all) return Promise.resolve(all);
-    return fetch('toilets.json', { cache: 'default' })
-      .then(function (res) {
-        if (!res.ok) throw new Error('toilets.json ' + res.status);
-        return res.json();
-      })
-      .then(function (json) {
-        all = json.toilets.map(function (t) {
-          return { lat: t[0], lon: t[1], customers: !!t[2], fee: !!t[3], name: t[4] };
-        });
-        return all;
-      });
-  }
-
-  function rank(from) {
-    return all
-      .map(function (t) {
-        var d = distance(from, t);
-        return { t: t, score: d + (t.customers ? CUSTOMER_PENALTY : 0), d: d };
-      })
-      .sort(function (a, b) { return a.score - b.score; })
-      .map(function (x) { return x.t; });
-  }
-
-  function onOrient(e, absolute) {
-    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
-      absolute = true;
-    }
-    if (haveAbsolute && !absolute) return;
-    var h = headingFrom(e);
-    if (h === null) return;
-    if (absolute) haveAbsolute = true;
-    source = absolute
-      ? (typeof e.webkitCompassHeading === 'number' ? 'ios compass' : 'absolute')
-      : 'relative';
-    events++;
-    heading = smooth(h);
-    dirty = true;
-  }
-
-  function startCompass() {
-    var DOE = window.DeviceOrientationEvent;
-    if (!DOE) return Promise.resolve();
-    var ready = (typeof DOE.requestPermission === 'function')
-      ? DOE.requestPermission()
-      : Promise.resolve('granted');
-
-    return ready.then(function (state) {
-      if (state !== 'granted') { source = 'denied'; return; }
-      window.addEventListener('deviceorientationabsolute', function (e) {
-        onOrient(e, true);
-      }, true);
-      window.addEventListener('deviceorientation', function (e) {
-        onOrient(e, !!e.absolute);
-      }, true);
-    }).catch(function () { source = 'unavailable'; });
-  }
-
-  function firstFix() {
-    return new Promise(function (resolve, reject) {
-      if (!navigator.geolocation) return reject(new Error('no geolocation'));
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) return;
-        settled = true;
-        reject(new Error('location timed out'));
-      }, 15000);
-
-      navigator.geolocation.getCurrentPosition(function (p) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy });
-      }, function (err) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
-    });
-  }
-
-  function watch() {
-    navigator.geolocation.watchPosition(function (p) {
-      pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
-      dirty = true;
-    }, function () {},
-       { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
-  }
-
-  function keepAwake() {
-    if (!navigator.wakeLock) return;
-    navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; })
-      .catch(function () {});
-  }
-
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && running && !over) keepAwake();
-  });
-
-  function go() {
-    if (running) return;
-    running = true;
-    reset();
-    startCompass();
-    keepAwake();
-
-    Promise.all([load(), firstFix()]).then(function (r) {
-      pos = r[1];
-      ranked = rank(pos);
-      pick = 0;
-      if (!ranked.length || distance(pos, ranked[0]) > OUT_OF_RANGE) {
-        running = false;
-        return show(sad);
-      }
-      watch();
-      dirty = true;
-    }).catch(function (err) {
-      running = false;
-      if (DEBUG) console.error(err);
-      show(sad);
-    });
-  }
-
-  var lastTap = 0;
-  document.addEventListener('click', function () {
-    var now = Date.now();
-    var quick = now - lastTap < 400;
-    lastTap = now;
-
-    if (!running) return go();
-    if (over) { running = false; return go(); }
-    if (quick && pick < ranked.length - 1) {
-      pick++;
-      hits = 0;
-      dirty = true;
-    }
-  });
-
-  requestAnimationFrame(frame);
-})();
-</script>
-
+            requestAnimationFrame(frame);
+        })();
+    </script>
 </body>
 </html>
